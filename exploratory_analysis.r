@@ -1,47 +1,29 @@
-library(ggplot2)
-library(patchwork)
-library(GGally)
-library(tidyr)
-library(car)
-require(glmnet)
-require(ggResidpanel)
-require(hnp)
-library(DHARMa)
-require(gamlss)
+packages_list <- c("ggplot2", "patchwork", "GGally", "tidyr", "car", "glmnet"
+                   , "ggResidpanel", "hnp", "DHARMa", "gamlss", "gamlss.dist", "dplyr")
+
+lapply(packages_list, library, character.only = TRUE)
 
 raw_data <- read.csv2('data/dados.csv')
 
-summary(raw_data)
+set.seed(123)
+#Análise exploratória das variáveis
+summary(raw_data[-cod_mun])
 
-#Univariate analysis
-hist(log(raw_data$populacao))
-hist(raw_data$taxa_mort_agressao)
-hist(raw_data$taxa_mortalidade)
-hist(raw_data$taxa_nascimentos)
-hist(raw_data$porc_agropecuaria)
-hist(raw_data$porc_industria)
-
-colnames(raw_data)
-summary(raw_data)
-
-vars <- c('populacao', 'pib_percap', 'taxa_nascimentos', 'taxa_urb', 'ideb', 'cobertura_bcg', 'taxa_jovens')
-
-plots <- lapply(vars, function(v) {
-  ggplot(raw_data, aes_string(x = v, y = 'acidentes')) +
-    geom_point(alpha = 0.6) +
-    geom_smooth(method = "lm", se = FALSE, color = "red") +
-    theme_bw() +
-    labs(title = v)
-})
-
-wrap_plots(plots, ncol = 3)
+#As transformação a seguir foram aplicada inicialmente SOMENTE para melhor 
+#visualizar os dados, porém os primeiros modelos rodar sem as transformações
+#e NÂO transformar a variável resposta para nenhum modelo
 
 raw_data$populacao <- log(raw_data$populacao)
-raw_data$pib_percap <- log1p(raw_data$pib_percap)
-raw_data$taxa_nascimentos <- log1p(raw_data$taxa_nascimentos)
-raw_data$taxa_urb <- log(raw_data$taxa_urb)
-raw_data$cobertura_bcg <- log(raw_data$cobertura_bcg)
-#raw_data$acidentes <- log1p(raw_data$acidentes)
+raw_data$pib_percap <- log(raw_data$pib_percap)
+raw_data$taxa_equipes_saude <- log1p(raw_data$taxa_equipes_saude)
+raw_data$acidentes <- log1p(raw_data$acidentes)
+
+hist(raw_data$acidentes, breaks = 10, main = "Distribuição de Acidentes")
+
+vars <- c('populacao', 'pib_percap', 'taxa_nascimentos', 'taxa_urb', 'ideb'
+          , 'taxa_internacoes_cidalcool', 'taxa_equipes_saude')
+
+summary(raw_data[c('acidentes', vars)])
 
 plots <- lapply(vars, function(v) {
   ggplot(raw_data, aes_string(x = v, y = 'acidentes')) +
@@ -51,108 +33,180 @@ plots <- lapply(vars, function(v) {
     labs(title = v)
 })
 
-wrap_plots(plots, ncol = 3)
+wrap_plots(plots, ncol = 4)
 
-ggpairs(raw_data[, c(vars, 'acidentes')])
+#Ajuste inicial Modelo Poisson
+ajuste_pos <- gamlss(acidentes ~ . - cod_mun - nome_mun, family = PO, data = raw_data)
+summary(ajuste_pos)
 
-ajuste1 <- glm(acidentes ~ populacao, 
-                     family = poisson(link = 'log'), 
-                     data = raw_data)
-
-ajuste2 <- glm(acidentes ~ . - cod_mun - nome_mun, 
-               family = poisson(link = 'log'), 
-               data = raw_data)
-
-summary(ajuste1)
-
-summary(ajuste2)
-vif(ajuste2)
-
-anova(ajuste1, ajuste2)
-
-#Análise do ajuste com Poisson e log
 par(mfrow = c(2,2))
-plot(ajuste2, which = 1:4)
-
-resid_panel(ajuste2, plots = c("resid", "qq", "ls", "cookd"), qqbands = TRUE, nrow = 2)
+plot(ajuste_pos)
 
 par(mfrow = c(1,1))
-hnp(ajuste2, pch = 20, cex = 1.2)
+wp(ajuste_pos, xvar = NULL)
 
 #Transformando as variáveis
 raw_data$populacao <- log(raw_data$populacao)
-raw_data$pib_percap <- log1p(raw_data$pib_percap)
-raw_data$taxa_nascimentos <- log1p(raw_data$taxa_nascimentos)
-raw_data$taxa_urb <- log(raw_data$taxa_urb)
-raw_data$cobertura_bcg <- log(raw_data$cobertura_bcg)
+raw_data$pib_percap <- log(raw_data$pib_percap)
+raw_data$taxa_equipes_saude <- log1p(raw_data$taxa_equipes_saude)
 
-ajuste_transf <- glm(acidentes ~ . - cod_mun - nome_mun, 
-               family = poisson(link = 'log'), 
-               data = raw_data)
-
-summary(ajuste2)
+ajuste_transf <- gamlss(acidentes ~ . - cod_mun - nome_mun, family = PO, data = raw_data)
 summary(ajuste_transf)
-vif(ajuste_transf)
 
-anova(ajuste2, ajuste_transf)
-
-#Análise do ajuste com Poisson e log
 par(mfrow = c(2,2))
-plot(ajuste2, which = 1:4)
-plot(ajuste_transf, which = 1:4)
+plot(ajuste_transf)
 
-resid_panel(ajuste_transf, plots = c("resid", "qq", "ls", "cookd"), qqbands = TRUE, nrow = 2)
+par(mfrow = c(1,1))
+wp(ajuste_transf, xvar = NULL)
 
-par(mfrow = c(1,2))
-hnp(ajuste2, pch = 20, cex = 1.2)
-hnp(ajuste_transf, pch = 20, cex = 1.2)
+AIC(ajuste_pos, ajuste_transf)
+
+#Fazemos já uma seleção de variáveis utilizando LASSO no modelo base de Poisson
+X <- model.matrix(acidentes ~ . - cod_mun - nome_mun, data = raw_data)[,-1]
+y <- raw_data$acidentes
+
+cvfit <- cv.glmnet(X, y, family = "poisson", alpha = 0.5)
+coef(cvfit)
+
+#Prosseguimos com modelos usando as variáveis selecionadas pelo LASSO
+ajuste_lasso <- gamlss(acidentes ~ populacao + pib_percap + ideb + taxa_nascimentos + taxa_equipes_saude
+                       , family = PO, data = raw_data)
+summary(ajuste_lasso)
+
+par(mfrow = c(2,2))
+plot(ajuste_lasso)
+
+par(mfrow = c(1,1))
+wp(ajuste_lasso, xvar = NULL)
 
 #Parece ter indícios claros de superdispersão
 #Tivemos um alternation limit reached, então aumentos o maxit para ter mais iterações
-ajustenb <- glm.nb(acidentes ~ . - cod_mun - nome_mun, data=raw_data, maxit=100)
-
-par(mfrow = c(2,2))
-plot(ajustenb, which = 1:4)
-
-#resid_panel(ajustenb, plots = c("resid", "qq", "ls", "cookd"), qqbands = TRUE, nrow = 2)
+ajustenb <- gamlss(acidentes ~ populacao + pib_percap + ideb + taxa_nascimentos + taxa_equipes_saude,
+                   family = NBI, data = raw_data)
+summary(ajustenb)
 
 par(mfrow = c(1,1))
-hnp(ajustenb, pch = 20, cex = 1.2)
+wp(ajustenb, xvar = NULL)
 
-#Testes da NB com link Log
-sim_nb <- simulateResiduals(ajustenb)
-#Gráficos com Resíduos simulados
-plot(sim_nb)
-#Testes de inflação de zeros e de dispersão (sub ou sob)
-testDispersion(sim_nb)
-testZeroInflation(sim_nb)
+par(mfrow = c(2,2))
+plot(ajustenb)
 
-#ZIP
-ajusteZIP <- gamlss(acidentes ~ . - cod_mun - nome_mun,
-                     sigma.formula =~ . - cod_mun - nome_mun,
+#Modelos para zeros inflacionados/alterados
+ajusteZIP <- gamlss(acidentes ~ populacao + pib_percap + ideb + taxa_nascimentos + taxa_equipes_saude,
+                     sigma.formula =~ populacao,
                      family = ZIP, data = raw_data)
+summary(ajusteZIP)
 plot(ajusteZIP)
 
-ajusteZAP <- gamlss(acidentes ~ . - cod_mun - nome_mun,
-                    sigma.formula =~ . - cod_mun - nome_mun,
+par(mfrow = c(1,1))
+wp(ajusteZIP, xvar = NULL)
+
+ajusteZAP <- gamlss(acidentes ~ populacao + pib_percap + ideb + taxa_nascimentos + taxa_equipes_saude,
+                    sigma.formula =~ populacao,
                     family = ZAP, data = raw_data)
+summary(ajusteZAP)
 plot(ajusteZAP)
 
-ajusteZINBI <- gamlss(acidentes ~ . - cod_mun - nome_mun,
-                    sigma.formula =~ . - cod_mun - nome_mun,
-                    family = ZINBI, data = raw_data)
+par(mfrow = c(1,1))
+wp(ajusteZAP, xvar = NULL)
+
+ajusteZINBI <- gamlss(acidentes ~ populacao + pib_percap + ideb + taxa_nascimentos + taxa_equipes_saude,
+                    sigma.formula =~ populacao,
+                    nu.formula =~ populacao,
+                    family = ZINBI, data = raw_data, method = RS(3000))
 summary(ajusteZINBI)
 plot(ajusteZINBI)
 
-ajusteZANBI <- gamlss(acidentes ~ . - cod_mun - nome_mun,
-                      sigma.formula =~ . - cod_mun - nome_mun,
-                      family = ZANBI, data = raw_data, method = RS(2000))
+par(mfrow = c(1,1))
+wp(ajusteZINBI, xvar = NULL, ylim.all = TRUE)
+
+ajusteZANBI <- gamlss(acidentes ~ populacao + pib_percap + ideb + taxa_nascimentos + taxa_equipes_saude,
+                      sigma.formula =~ populacao,
+                      nu.formula =~ populacao,
+                      family = ZANBI, data = raw_data, method = RS(300))
+
 summary(ajusteZANBI)
 plot(ajusteZANBI)
 
-res <- qresid(ajusteZANBI)
-summary(res)
-sum(is.na(res))
+par(mfrow = c(1,1))
+wp(ajusteZANBI, xvar = NULL, ylim.all = TRUE)
 
-AIC(ajuste2, ajuste_transf, ajustenb, ajusteZIP, ajusteZAP, ajusteZINBI, ajusteZANBI)
-BIC(ajuste2, ajuste_transf, ajustenb, ajusteZIP, ajusteZAP, ajusteZINBI, ajusteZANBI)
+AIC(ajuste_lasso, ajustenb, ajusteZIP, ajusteZAP, ajusteZINBI, ajusteZANBI)
+BIC(ajuste_lasso, ajustenb, ajusteZIP, ajusteZAP, ajusteZINBI, ajusteZANBI)
+
+#Modelo NB tem o melhor desempenho, tanto graficamente como pelas métricas AIC e BIC
+#Por isso, vamos prosseguir com ele para as próximas análises
+
+#Testando outra funções de ligação
+ajustenb_sqrt <- gamlss(acidentes ~ populacao + pib_percap + ideb + taxa_nascimentos + taxa_equipes_saude,
+                   family = NBI(mu.link = "sqrt"), data = raw_data)
+
+summary(ajustenb)
+summary(ajustenb_sqrt)
+
+ajustenb_sigsqrt <- gamlss(acidentes ~ populacao + pib_percap + ideb + taxa_nascimentos + taxa_equipes_saude,
+                           sigma.formula =~ populacao,
+                        family = NBI(sigma.link = "sqrt"), data = raw_data)
+
+ajustenb_sigsqrt_total <- gamlss(acidentes ~ populacao + pib_percap + ideb + taxa_nascimentos + taxa_equipes_saude,
+                           sigma.formula =~ populacao + taxa_nascimentos + taxa_equipes_saude,
+                           family = NBI(sigma.link = "sqrt"), data = raw_data)
+
+ajustenb_sigsqrt2_total <- gamlss(acidentes ~ populacao + pib_percap + ideb + taxa_nascimentos + taxa_equipes_saude,
+                                 sigma.formula =~ populacao + taxa_nascimentos + taxa_equipes_saude,
+                                 family = NBI(mu.link = "sqrt", sigma.link = "sqrt"), data = raw_data)
+
+ajustenb_sig_total <- gamlss(acidentes ~ populacao + pib_percap + ideb + taxa_nascimentos + taxa_equipes_saude,
+                                 sigma.formula =~ populacao + taxa_nascimentos + taxa_equipes_saude,
+                                 family = NBI, data = raw_data)
+
+summary(ajustenb_sig_total)
+summary(ajustenb_sigsqrt_total)
+
+AIC(ajustenb, ajustenb_sqrt, ajustenb_sigsqrt, ajustenb_sigsqrt_total, ajustenb_sig_total, ajustenb_sigsqrt2_total)
+BIC(ajustenb, ajustenb_sqrt, ajustenb_sigsqrt, ajustenb_sigsqrt_total, ajustenb_sig_total, ajustenb_sigsqrt2_total)
+
+par(mfrow = c(1,1))
+wp(ajustenb_sigsqrt_total, xvar = NULL)
+
+par(mfrow = c(2,2))
+plot(ajustenb_sigsqrt_total)
+
+#Seleção de variáveis método STEP
+step(ajustenb)
+
+ajustenb_step <- gamlss(acidentes ~ populacao + taxa_equipes_saude + populacao * taxa_equipes_saude,
+                   family = NBI, data = raw_data)
+
+AIC(ajustenb, ajustenb_step)
+BIC(ajustenb, ajustenb_step)
+
+summary(ajustenb_step)
+
+par(mfrow = c(1,1))
+wp(ajustenb, xvar = NULL)
+
+par(mfrow = c(2,2))
+plot(ajustenb)
+
+#Pontos influentes
+rq <- resid(ajustenb_step, what = "z-scores")
+H <- hatvalues(ajustenb_step)
+infl_points <- which(H > 3 * mean(H))
+
+summary(raw_data)
+summary(raw_data[infl_points,-(1:2)])
+
+raw_no_infl <- raw_data[-infl_points, ]
+
+ajuste_no_infl <- gamlss(acidentes ~ populacao + taxa_equipes_saude,
+                         family = NBI, data = raw_no_infl)
+
+summary(ajuste_no_infl)
+plot(ajuste_no_infl)
+
+wp(ajustenb, xvar = NULL)
+wp(ajuste_no_infl, xvar = NULL)
+
+AIC(ajustenb_step, ajuste_no_infl)
+BIC(ajustenb_step, ajuste_no_infl)
