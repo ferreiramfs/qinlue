@@ -175,7 +175,7 @@ plot(ajustenb_sigsqrt_total)
 #Seleção de variáveis método STEP
 step(ajustenb)
 
-ajustenb_step <- gamlss(acidentes ~ populacao + taxa_equipes_saude + populacao * taxa_equipes_saude,
+ajustenb_step <- gamlss(acidentes ~ populacao + taxa_equipes_saude,
                    family = NBI, data = raw_data)
 
 AIC(ajustenb, ajustenb_step)
@@ -189,23 +189,45 @@ wp(ajustenb, xvar = NULL)
 par(mfrow = c(2,2))
 plot(ajustenb)
 
+#Caso de exemplo interpretação
+dados_exemplo <- raw_data[c(1, 89, 105),c('nome_mun','acidentes', 'populacao', 'taxa_equipes_saude')]
+mat_cov <- vcov(ajustenb_step, what="mu")
+
+pred <- predictAll(ajustenb_step, newdata = dados_exemplo, type = "link")
+
+LP     <- pred$mu.fit
+SE_LP  <- pred$mu.se
+
+mu_hat     <- exp(LP)
+IC_low_mu  <- exp(LP - 1.96 * SE_LP)
+IC_high_mu <- exp(LP + 1.96 * SE_LP)
+
+data.frame(
+  dados_exemplo,
+  mu_hat,
+  IC_low_mu,
+  IC_high_mu
+)
+
 #Pontos influentes
 rq <- resid(ajustenb_step, what = "z-scores")
 H <- hatvalues(ajustenb_step)
 infl_points <- which(H > 3 * mean(H))
 
-summary(raw_data)
-summary(raw_data[infl_points,-(1:2)])
+summary(raw_data[, c('acidentes', 'populacao', 'taxa_equipes_saude')])
 
 raw_no_infl <- raw_data[-infl_points, ]
+summary(ajustenb_step)
 
 ajuste_no_infl <- gamlss(acidentes ~ populacao + taxa_equipes_saude,
                          family = NBI, data = raw_no_infl)
 
 summary(ajuste_no_infl)
 plot(ajuste_no_infl)
+plot(ajustenb_step)
 
-wp(ajustenb, xvar = NULL)
+par(mfrow = c(1,1))
+wp(ajustenb_step, xvar = NULL)
 wp(ajuste_no_infl, xvar = NULL)
 
 AIC(ajustenb_step, ajuste_no_infl)
